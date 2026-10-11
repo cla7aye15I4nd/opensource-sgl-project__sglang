@@ -583,7 +583,26 @@ class CLIPModel(nn.Module):
             return EmbeddingPoolerOutput(embeddings=image_embeds)
 
         else:
-            text_outputs = self.text_model(input_ids, position_ids=positions)
+            attention_mask = None
+            if forward_batch.batch_size > 1:
+                # Packed requests share a sequence dimension, not attention.
+                request_ids = torch.repeat_interleave(
+                    torch.arange(forward_batch.batch_size, device=input_ids.device),
+                    forward_batch.extend_seq_lens,
+                    output_size=input_ids.numel(),
+                )
+                dtype = self.text_model.embeddings.token_embedding.weight.dtype
+                attention_mask = torch.zeros(
+                    (input_ids.numel(), input_ids.numel()),
+                    dtype=dtype,
+                    device=input_ids.device,
+                ).masked_fill(
+                    request_ids[:, None] != request_ids[None, :],
+                    torch.finfo(dtype).min,
+                )[None, None]
+            text_outputs = self.text_model(
+                input_ids, attention_mask=attention_mask, position_ids=positions
+            )
             pooled_output = self.pooler(text_outputs[0], forward_batch)
             return EmbeddingPoolerOutput(
                 embeddings=self.text_projection(pooled_output.embeddings)
